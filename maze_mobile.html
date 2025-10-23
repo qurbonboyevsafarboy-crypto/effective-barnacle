@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>Maze — Safarboy (mobile+desktop)</title>
+<style>
+  :root{
+    --bg: #e9f7ef;
+    --panel: #0b6;
+    --wall: #003300;
+    --player: #ffeb3b;
+    --treasure: #ff3b3b;
+    --accent: #044;
+  }
+  html,body{height:100%;margin:0;background:linear-gradient(180deg,#f0fff0,#cfeecd);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}
+  .wrap{max-width:1100px;margin:18px auto;padding:12px;background:#fff;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.12)}
+  header{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:8px}
+  header h1{margin:0;font-size:18px;color:var(--accent)}
+  .controls{display:flex;gap:8px;align-items:center}
+  .controls .row{display:flex;gap:8px;align-items:center}
+  label{font-size:13px;color:#066}
+  input[type=number]{width:64px;padding:6px;border-radius:8px;border:1px solid #ddd}
+  button{background:var(--panel);color:#fff;border:0;padding:8px 12px;border-radius:8px;cursor:pointer;font-weight:700}
+  button.secondary{background:#eee;color:var(--accent)}
+  #c{display:block;margin:12px auto;border-radius:8px;background:#fff;touch-action:none}
+  footer{padding:8px;text-align:center;color:#056;font-size:13px}
+  /* mobile dpad */
+  .mobile-controls{display:flex;gap:14px;align-items:center;justify-content:center;margin-top:8px}
+  .dpad{width:136px;height:136px;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);gap:6px;user-select:none}
+  .dpad button{border-radius:8px;border:0;background:rgba(0,0,0,0.06);font-weight:800;font-size:20px;color:var(--accent);display:flex;justify-content:center;align-items:center;touch-action:none}
+  .dpad button.hidden{visibility:hidden}
+  /* floating overlay for win */
+  #winBanner{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);background:linear-gradient(45deg,#ffd54f,#ffb300);padding:22px 36px;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);display:none;z-index:40;font-weight:800;color:#222}
+  /* layout for mobile: put controls under canvas */
+  @media (max-width:720px){
+    .wrap{margin:8px}
+    .controls{flex-direction:column;align-items:flex-start;gap:6px}
+    .controls .row{flex-wrap:wrap}
+  }
+</style>
+</head>
+<body>
+  <div class="wrap" role="application" aria-label="Maze game">
+    <header>
+      <h1>Random Solvable Maze — Safarboy</h1>
+      <div class="controls" aria-hidden="false">
+        <div class="row" style="align-items:center">
+          <label for="cols">Cols</label>
+          <input id="cols" type="number" min="15" max="101" step="2" value="41" aria-label="Columns">
+          <label for="rows">Rows</label>
+          <input id="rows" type="number" min="11" max="61" step="2" value="23" aria-label="Rows">
+          <label for="cell">Cell px</label>
+          <input id="cell" type="number" min="8" max="28" step="1" value="16" aria-label="Cell size">
+        </div>
+        <button id="restartBtn">Restart</button>
+        <button id="solveBtn" class="secondary">Show Path</button>
+      </div>
+    </header>
+
+    <canvas id="c" role="img" aria-label="Maze canvas"></canvas>
+
+    <div class="mobile-controls" aria-hidden="false">
+      <div class="dpad" id="dpad">
+        <button class="hidden" aria-hidden="true"></button>
+        <button data-dir="up" aria-label="Up">↑</button>
+        <button class="hidden" aria-hidden="true"></button>
+
+        <button data-dir="left" aria-label="Left">←</button>
+        <button class="hidden">●</button>
+        <button data-dir="right" aria-label="Right">→</button>
+
+        <button class="hidden" aria-hidden="true"></button>
+        <button data-dir="down" aria-label="Down">↓</button>
+        <button class="hidden" aria-hidden="true"></button>
+      </div>
+    </div>
+
+    <footer>W/A/S/D yoki ←/↑/↓/→ — klaviatura. Telefon: D-pad yoki ekranga tegish bilan harakat.</footer>
+  </div>
+
+  <div id="winBanner">🎉 Tabriklaymiz — xazinani topdingiz! 🎉</div>
+
+<script>
+/* Maze mobile+desktop
+ - Perfect maze generator (iterative recursive backtracker)
+ - Movement: keyboard (keydown/keyup), D-pad (pointerdown/pointerup), tap-to-move (canvas click/touch)
+ - Continuous movement when holding key or holding dpad
+ - Move rate controlled by moveInterval (ms)
+ - Show Path with BFS
+ - One-time win banner (appears and hides)
+*/
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const colsInput = document.getElementById('cols');
+const rowsInput = document.getElementById('rows');
+const cellInput = document.getElementById('cell');
+const restartBtn = document.getElementById('restartBtn');
+const solveBtn = document.getElementById('solveBtn');
+const dpad = document.getElementById('dpad');
+const winBanner = document.getElementById('winBanner');
+
+let COLS = parseInt(colsInput.value) || 41;
+let ROWS = parseInt(rowsInput.value) || 23;
+let CELL = parseInt(cellInput.value) || 16;
+
+function adjustInputs(){
+  COLS = Math.max(15, Math.min(101, parseInt(colsInput.value) || 41));
+  ROWS = Math.max(11, Math.min(61, parseInt(rowsInput.value) || 23));
+  if(COLS % 2 === 0) COLS++;
+  if(ROWS % 2 === 0) ROWS++;
+  CELL = Math.max(8, Math.min(28, parseInt(cellInput.value) || 16));
+  colsInput.value = COLS;
+  rowsInput.value = ROWS;
+  cellInput.value = CELL;
+}
+adjustInputs();
+
+let grid = null;
+let player = {x:1,y:1};
+let treasure = {x:COLS-2,y:ROWS-2};
+let solutionPath = null;
+let hasWon = false;
+
+// movement state
+let moveDir = null;        // {x,y} desired direction
+let keyState = {};         // keys currently pressed
+let pointerState = {hold:false, dir:null}; // for dpad pointer hold
+const moveInterval = 80;   // ms between steps when holding
+let lastMoveTime = 0;
+
+// generate perfect maze
+function makeGrid(cols, rows){
+  return Array.from({length:rows}, ()=> Array(cols).fill(1));
+}
+function generateMaze(cols, rows){
+  const maze = makeGrid(cols, rows);
+  const stack = [];
+  maze[1][1] = 0;
+  stack.push({x:1,y:1});
+  const dirs = [{x:0,y:-2},{x:2,y:0},{x:0,y:2},{x:-2,y:0}];
+  while(stack.length){
+    const cur = stack[stack.length-1];
+    const cx = cur.x, cy = cur.y;
+    const neighbors = [];
+    for(const d of dirs){
+      const nx = cx + d.x, ny = cy + d.y;
+      if(nx>0 && nx<cols-1 && ny>0 && ny<rows-1 && maze[ny][nx]===1) neighbors.push(d);
+    }
+    if(neighbors.length === 0){ stack.pop(); continue; }
+    const d = neighbors[Math.floor(Math.random()*neighbors.length)];
+    const nx = cx + d.x, ny = cy + d.y;
+    const wx = cx + d.x/2, wy = cy + d.y/2;
+    maze[wy][wx] = 0;
+    maze[ny][nx] = 0;
+    stack.push({x:nx,y:ny});
+  }
+  maze[1][1] = 0;
+  maze[rows-2][cols-2] = 0;
+  return maze;
+}
+
+// drawing
+function resizeCanvas(){
+  canvas.width = COLS * CELL;
+  canvas.height = ROWS * CELL;
+  canvas.style.width = Math.min(window.innerWidth - 40, canvas.width) + 'px';
+}
+function draw(){
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // walls
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--wall') || '#003300';
+  for(let y=0;y<ROWS;y++){
+    for(let x=0;x<COLS;x++){
+      if(grid[y][x] === 1){
+        ctx.fillRect(x*CELL, y*CELL, CELL, CELL);
+      }
+    }
+  }
+
+  // show solution if available
+  if(solutionPath){
+    ctx.fillStyle = 'rgba(255,215,0,0.28)';
+    for(const p of solutionPath){ ctx.fillRect(p.x*CELL, p.y*CELL, CELL, CELL); }
+  }
+
+  // treasure (goal)
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--treasure') || '#ff3b3b';
+  ctx.beginPath();
+  ctx.arc((treasure.x+0.5)*CELL, (treasure.y+0.5)*CELL, CELL*0.38, 0, Math.PI*2);
+  ctx.fill();
+
+  // player
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--player') || '#ffeb3b';
+  ctx.beginPath();
+  ctx.arc((player.x+0.5)*CELL, (player.y+0.5)*CELL, CELL*0.36, 0, Math.PI*2);
+  ctx.fill();
+
+  // optional grid lines subtle
+  ctx.strokeStyle = 'rgba(0,0,0,0.04)';
+  ctx.lineWidth = 1;
+  for(let x=0;x<=COLS;x++){ ctx.beginPath(); ctx.moveTo(x*CELL,0); ctx.lineTo(x*CELL,canvas.height); ctx.stroke(); }
+  for(let y=0;y<=ROWS;y++){ ctx.beginPath(); ctx.moveTo(0,y*CELL); ctx.lineTo(canvas.width,y*CELL); ctx.stroke(); }
+}
+
+// BFS path finder
+function findPathBFS(){
+  const q = [];
+  const visited = Array.from({length:ROWS}, ()=> Array(COLS).fill(false));
+  const parent = Array.from({length:ROWS}, ()=> Array(COLS).fill(null));
+  q.push({x:player.x,y:player.y});
+  visited[player.y][player.x] = true;
+  const dirs = [{x:0,y:-1},{x:1,y:0},{x:0,y:1},{x:-1,y:0}];
+  while(q.length){
+    const p = q.shift();
+    if(p.x === treasure.x && p.y === treasure.y){
+      const path = []; let cur = p;
+      while(cur){ path.push(cur); cur = parent[cur.y][cur.x]; }
+      return path.reverse();
+    }
+    for(const d of dirs){
+      const nx = p.x + d.x, ny = p.y + d.y;
+      if(nx>=0 && nx<COLS && ny>=0 && ny<ROWS && !visited[ny][nx] && grid[ny][nx]===0){
+        visited[ny][nx] = true;
+        parent[ny][nx] = p;
+        q.push({x:nx,y:ny});
+      }
+    }
+  }
+  return null;
+}
+
+// init / reset
+function placePlayerAndTreasure(){
+  player = {x:1,y:1};
+  treasure = {x:COLS-2,y:ROWS-2};
+  grid[player.y][player.x] = 0;
+  grid[treasure.y][treasure.x] = 0;
+}
+
+function initNewMaze(){
+  adjustInputs();
+  grid = generateMaze(COLS, ROWS);
+  resizeCanvas();
+  placePlayerAndTreasure();
+  solutionPath = null;
+  hasWon = false;
+  winBanner.style.display = 'none';
+  draw();
+}
+
+// movement helpers
+function tryMove(dx, dy){
+  const nx = player.x + dx, ny = player.y + dy;
+  if(nx>=0 && nx<COLS && ny>=0 && ny<ROWS && grid[ny][nx] === 0){
+    player.x = nx; player.y = ny;
+    // check win
+    if(!hasWon && player.x === treasure.x && player.y === treasure.y){
+      hasWon = true;
+      winBanner.style.display = 'block';
+      setTimeout(()=>{ winBanner.style.display = 'none'; }, 2500);
+      solutionPath = null;
+    }
+    draw();
+    return true;
+  }
+  return false;
+}
+
+// keyboard handling (supports hold)
+window.addEventListener('keydown', (e)=>{
+  const k = e.key;
+  if(k === 'w' || k === 'W' || k === 'ArrowUp') keyState['up'] = true;
+  if(k === 's' || k === 'S' || k === 'ArrowDown') keyState['down'] = true;
+  if(k === 'a' || k === 'A' || k === 'ArrowLeft') keyState['left'] = true;
+  if(k === 'd' || k === 'D' || k === 'ArrowRight') keyState['right'] = true;
+  // set moveDir according to priority
+  setMoveDirFromKeys();
+});
+window.addEventListener('keyup', (e)=>{
+  const k = e.key;
+  if(k === 'w' || k === 'W' || k === 'ArrowUp') keyState['up'] = false;
+  if(k === 's' || k === 'S' || k === 'ArrowDown') keyState['down'] = false;
+  if(k === 'a' || k === 'A' || k === 'ArrowLeft') keyState['left'] = false;
+  if(k === 'd' || k === 'D' || k === 'ArrowRight') keyState['right'] = false;
+  setMoveDirFromKeys();
+});
+function setMoveDirFromKeys(){
+  // Prefer vertical over horizontal if both pressed? We'll pick last set by check order
+  if(keyState['up']) moveDir = {x:0,y:-1};
+  else if(keyState['down']) moveDir = {x:0,y:1};
+  else if(keyState['left']) moveDir = {x:-1,y:0};
+  else if(keyState['right']) moveDir = {x:1,y:0};
+  else moveDir = null;
+}
+
+// D-pad pointer handling
+dpad.addEventListener('pointerdown', (ev)=>{
+  const btn = ev.target.closest('button[data-dir]');
+  if(!btn) return;
+  const dir = btn.dataset.dir;
+  pointerState.hold = true;
+  pointerState.dir = dir;
+  // translate to moveDir
+  if(dir === 'up') moveDir = {x:0,y:-1};
+  if(dir === 'down') moveDir = {x:0,y:1};
+  if(dir === 'left') moveDir = {x:-1,y:0};
+  if(dir === 'right') moveDir = {x:1,y:0};
+  ev.target.setPointerCapture(ev.pointerId);
+});
+dpad.addEventListener('pointerup', (ev)=>{
+  pointerState.hold = false;
+  pointerState.dir = null;
+  // if no keyboard keys pressed, stop movement
+  setMoveDirFromKeys();
+});
+dpad.addEventListener('pointercancel', ()=>{ pointerState.hold=false; pointerState.dir=null; setMoveDirFromKeys(); });
+
+// canvas tap-to-move (single step towards tap)
+canvas.addEventListener('pointerdown', (ev)=>{
+  // compute canvas coords mapped to cell
+  const rect = canvas.getBoundingClientRect();
+  const cx = (ev.clientX - rect.left) * (canvas.width / rect.width);
+  const cy = (ev.clientY - rect.top) * (canvas.height / rect.height);
+  const tx = Math.floor(cx / CELL);
+  const ty = Math.floor(cy / CELL);
+  // decide primary direction to move one step toward target cell
+  const dx = tx - player.x;
+  const dy = ty - player.y;
+  if(Math.abs(dx) > Math.abs(dy)){
+    moveDir = {x: dx > 0 ? 1 : -1, y:0};
+  } else if(Math.abs(dy) > 0){
+    moveDir = {x:0, y: dy > 0 ? 1 : -1};
+  }
+  // a tap counts as single-step; we won't hold it
+});
+
+// Show path button
+solveBtn.addEventListener('click', ()=>{
+  solutionPath = findPathBFS();
+  draw();
+});
+
+// restart
+restartBtn.addEventListener('click', ()=>initNewMaze());
+
+// input changes
+colsInput.addEventListener('change', ()=>initNewMaze());
+rowsInput.addEventListener('change', ()=>initNewMaze());
+cellInput.addEventListener('change', ()=>initNewMaze());
+
+function gameTick(timestamp){
+  if(!lastMoveTime) lastMoveTime = timestamp;
+  const elapsed = timestamp - lastMoveTime;
+  if(moveDir && elapsed >= moveInterval && !hasWon){
+    // if keyboard held or pointer held or tap set moveDir, attempt move
+    tryMove(moveDir.x, moveDir.y);
+    lastMoveTime = timestamp;
+    // if pointer (dpad) not held and keyboard not held, then it's a single tap; clear moveDir
+    if(!pointerState.hold && !keyState['up'] && !keyState['down'] && !keyState['left'] && !keyState['right']){
+      moveDir = null;
+    }
+  }
+  requestAnimationFrame(gameTick);
+}
+
+// ensure solvable; if not, regenerate few times
+function ensureSolvableAndInit(){
+  adjustInputs();
+  let attempts = 0;
+  do{
+    grid = generateMaze(COLS, ROWS);
+    placePlayerAndTreasure();
+    solutionPath = findPathBFS();
+    attempts++;
+  } while(!solutionPath && attempts < 8);
+  solutionPath = null;
+  hasWon = false;
+  winBanner.style.display = 'none';
+  resizeCanvas();
+  draw();
+}
+
+window.addEventListener('resize', ()=>{ resizeCanvas(); draw(); });
+
+// initial
+ensureSolvableAndInit();
+requestAnimationFrame(gameTick);
+</script>
+</body>
+</html>
